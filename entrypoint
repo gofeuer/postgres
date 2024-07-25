@@ -1,0 +1,32 @@
+#!/bin/bash
+set -e
+
+CHAR_MAP=${LANG#*.}; INPUT_FILE=${LANG%.*}; LOCALE=$LANG
+localedef -f $CHAR_MAP -i $INPUT_FILE $LOCALE
+echo "Container locale: $LOCALE"
+
+# Initialize Postgres if it is the first time the container is run
+if [ "$1" == "postgres" ] && [ ! -s "$PGDATA/PG_VERSION" ]; then
+
+	# Set $PGPASSWORD as /run/secrets/pgpassword contents or current value of PGPASSWORD or default value "postgres"
+	export PGPASSWORD=$(grep -s . /run/secrets/pgpassword || echo "${PGPASSWORD:-postgres}")
+
+	initdb --locale="$LANG" --auth=scram-sha-256 --no-instructions \
+	--username="${PGUSER:-postgres}" --pwfile=<(echo "$PGPASSWORD")
+	
+	echo 'local	all	all		scram-sha-256'  > $PGDATA/pg_hba.conf
+	echo 'host	all	all	all	scram-sha-256' >> $PGDATA/pg_hba.conf
+	
+	sed -i '/listen_addresses/{ s/^#//; s/localhost/*/ }' $PGDATA/postgresql.conf
+	
+	# Create a database named $PGDATABASE when Postgres starts, if $PGDATABASE is not "postgres"
+	if [ "${PGDATABASE:-postgres}" != "postgres" ]; then
+		(
+			until grep -sq ready $PGDATA/postmaster.pid; do sleep 0.1; done
+			createdb -e --no-password -O "$PGUSER" "$PGDATABASE"
+		) &
+	fi
+	echo ""
+fi
+unset PGPASSWORD
+exec "$@"
